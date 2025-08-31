@@ -2,19 +2,20 @@ package com.example.hotelbooking.server;
 
 import com.example.hotelbooking.dto.BookingRequest;
 import com.example.hotelbooking.dto.BookingResponse;
+import com.example.hotelbooking.model.Booking;
 import com.example.hotelbooking.metrics.MetricsRegistry;
 import com.example.hotelbooking.service.BookingService;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpHandler;
+import com.fasterxml.jackson.databind.SerializationFeature;
+import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
-import java.nio.charset.StandardCharsets;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
-import java.util.Map;
 import java.util.regex.Pattern;
 import java.util.regex.Matcher;
 
@@ -26,23 +27,30 @@ public class BookingHandler implements HttpHandler {
     private final BookingService bookingService;
     private final ObjectMapper objectMapper;
     private final MetricsRegistry metricsRegistry;
-    // Rate limiter: 833 requests per second (3M per hour)
-    private final Semaphore rateLimiter = new Semaphore(833);
+    // Rate limiter: 5000 permits to handle high load
+    private final Semaphore rateLimiter = new Semaphore(1000, true);  // Fair semaphore with reduced permits
     private static final Pattern BOOKING_ID_PATTERN = Pattern.compile("/api/bookings/(\\d+)");
     private static final Pattern USER_BOOKINGS_PATTERN = Pattern.compile("/api/bookings/user/(\\d+)");
 
     public BookingHandler(BookingService bookingService) {
         this.bookingService = bookingService;
         this.objectMapper = new ObjectMapper();
+        // Configure ObjectMapper for better date/time handling and error messages
+        this.objectMapper.registerModule(new JavaTimeModule());
+        this.objectMapper.configure(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS, false);
+        this.objectMapper.configure(SerializationFeature.FAIL_ON_EMPTY_BEANS, false);
+        this.objectMapper.findAndRegisterModules(); // Register all available modules
         this.metricsRegistry = MetricsRegistry.getInstance();
     }
 
     @Override
     public void handle(HttpExchange exchange) throws IOException {
+        boolean permitAcquired = false;
         try {
             // Try to acquire a permit with timeout
-            if (!rateLimiter.tryAcquire(1, TimeUnit.SECONDS)) {
-                sendResponse(exchange, 429, "Too Many Requests");
+            permitAcquired = rateLimiter.tryAcquire(2, TimeUnit.SECONDS);
+            if (!permitAcquired) {
+                sendError(exchange, 429, "Too Many Requests");
                 return;
             }
 
@@ -68,13 +76,24 @@ public class BookingHandler implements HttpHandler {
                         }
                         break;
                     default:
-                        sendResponse(exchange, 405, "Method Not Allowed");
+                        sendError(exchange, 405, "Method Not Allowed");
                 }
+            } catch (IOException e) {
+                sendError(exchange, 500, "IO Error: " + e.getMessage());
+            } catch (IllegalArgumentException e) {
+                sendError(exchange, 400, "Bad Request: " + e.getMessage());
             } catch (Exception e) {
-                sendResponse(exchange, 500, "Internal Server Error: " + e.getMessage());
+                e.printStackTrace();
+                sendError(exchange, 500, e.getClass().getSimpleName() + ": " + e.getMessage());
             }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            sendError(exchange, 503, "Service Unavailable");
         } finally {
-            rateLimiter.release();
+            if (permitAcquired) {
+                rateLimiter.release();
+            }
+            exchange.close();
         }
     }
 
@@ -106,7 +125,7 @@ public class BookingHandler implements HttpHandler {
         var bookings = bookingService.getUserBookings(userId);
         var response = bookings.stream()
                 .map(this::convertToResponse)
-                .toList();
+                .collect(java.util.stream.Collectors.toList());
         sendResponse(exchange, 200, response);
     }
 
@@ -118,17 +137,69 @@ public class BookingHandler implements HttpHandler {
     }
 
     private <T> T readRequest(HttpExchange exchange, Class<T> clazz) throws IOException {
+        // Read the entire request body into a byte array first
+        byte[] requestBody;
         try (InputStream is = exchange.getRequestBody()) {
-            return objectMapper.readValue(is, clazz);
+            requestBody = is.readAllBytes();
+        } catch (IOException e) {
+            e.printStackTrace();
+            throw new IllegalArgumentException("Failed to read request body: " + e.getMessage());
+        }
+        
+        // Then parse the byte array
+        try {
+            return objectMapper.readValue(requestBody, clazz);
+        } catch (IOException e) {
+            e.printStackTrace();
+            throw new IllegalArgumentException("Invalid request body: " + e.getMessage());
+        }
+    }
+
+    private void sendError(HttpExchange exchange, int code, String message) throws IOException {
+        String response = "{\"error\": \"" + message + "\"}";
+        exchange.getResponseHeaders().set("Content-Type", "application/json");
+        exchange.sendResponseHeaders(code, response.length());
+        try (OutputStream os = exchange.getResponseBody()) {
+            os.write(response.getBytes());
         }
     }
 
     private void sendResponse(HttpExchange exchange, int statusCode, Object response) throws IOException {
-        byte[] responseBytes = objectMapper.writeValueAsBytes(response);
-        exchange.getResponseHeaders().set("Content-Type", "application/json");
-        exchange.sendResponseHeaders(statusCode, responseBytes.length);
-        try (OutputStream os = exchange.getResponseBody()) {
-            os.write(responseBytes);
+        byte[] responseBytes;
+        if (response instanceof String && ((String) response).isEmpty()) {
+            responseBytes = new byte[0];
+        } else {
+            try {
+                responseBytes = objectMapper.writeValueAsBytes(response);
+            } catch (Exception e) {
+                e.printStackTrace();
+                sendError(exchange, 500, "Error serializing response: " + e.getMessage());
+                return;
+            }
+        }
+
+        synchronized (exchange) {
+            try {
+                if (!exchange.getResponseHeaders().containsKey("Content-Type")) {
+                    exchange.getResponseHeaders().set("Content-Type", "application/json");
+                }
+                if (responseBytes.length == 0) {
+                    exchange.sendResponseHeaders(statusCode, -1);
+                } else {
+                    exchange.sendResponseHeaders(statusCode, responseBytes.length);
+                    try (OutputStream os = exchange.getResponseBody()) {
+                        os.write(responseBytes);
+                        os.flush();
+                    }
+                }
+            } catch (IOException e) {
+                // If we get here with "headers already sent", just log it and continue
+                if (e.getMessage() != null && e.getMessage().contains("headers already sent")) {
+                    System.err.println("Warning: Headers already sent for exchange: " + e.getMessage());
+                } else {
+                    throw e;
+                }
+            }
         }
     }
 

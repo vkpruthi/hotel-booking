@@ -1,26 +1,13 @@
 package com.example.hotelbooking.model;
 
-import javax.persistence.*;
 import java.util.HashSet;
 import java.util.Set;
 
-@Entity
-@Table(name = "hotels")
 public class Hotel {
-    @Id
-    @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
-
-    @Column(nullable = false)
     private String name;
-
-    @Column(nullable = false)
     private String address;
-
-    @Column(nullable = false)
     private Integer rating;
-
-    @OneToMany(mappedBy = "hotel", cascade = CascadeType.ALL)
     private Set<Room> rooms = new HashSet<>();
 
     // Getters and Setters

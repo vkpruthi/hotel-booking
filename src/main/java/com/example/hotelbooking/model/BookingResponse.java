@@ -1,20 +1,18 @@
 package com.example.hotelbooking.model;
 
+import com.example.hotelbooking.model.Booking.BookingStatus;
 import java.math.BigDecimal;
 import java.time.LocalDate;
 
-public class Booking {
+public class BookingResponse {
     private Long id;
-    private User user;
-    private Room room;
+    private String userName;
+    private String hotelName;
+    private String roomNumber;
     private LocalDate checkInDate;
     private LocalDate checkOutDate;
     private BigDecimal totalPrice;
     private BookingStatus status;
-
-    public enum BookingStatus {
-        PENDING, CONFIRMED, CANCELLED
-    }
 
     // Getters and Setters
     public Long getId() {
@@ -25,20 +23,28 @@ public class Booking {
         this.id = id;
     }
 
-    public User getUser() {
-        return user;
+    public String getUserName() {
+        return userName;
     }
 
-    public void setUser(User user) {
-        this.user = user;
+    public void setUserName(String userName) {
+        this.userName = userName;
     }
 
-    public Room getRoom() {
-        return room;
+    public String getHotelName() {
+        return hotelName;
     }
 
-    public void setRoom(Room room) {
-        this.room = room;
+    public void setHotelName(String hotelName) {
+        this.hotelName = hotelName;
+    }
+
+    public String getRoomNumber() {
+        return roomNumber;
+    }
+
+    public void setRoomNumber(String roomNumber) {
+        this.roomNumber = roomNumber;
     }
 
     public LocalDate getCheckInDate() {

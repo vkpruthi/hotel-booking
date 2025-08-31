@@ -1,19 +1,28 @@
-package com.example.hotelbooking.dto;
+package com.example.hotelbooking.model;
 
 import java.time.LocalDate;
 
-public class RoomSearchRequest {
-    private Long hotelId;
+public class BookingRequest {
+    private Long userId;
+    private Long roomId;
     private LocalDate checkInDate;
     private LocalDate checkOutDate;
 
     // Getters and Setters
-    public Long getHotelId() {
-        return hotelId;
+    public Long getUserId() {
+        return userId;
     }
 
-    public void setHotelId(Long hotelId) {
-        this.hotelId = hotelId;
+    public void setUserId(Long userId) {
+        this.userId = userId;
+    }
+
+    public Long getRoomId() {
+        return roomId;
+    }
+
+    public void setRoomId(Long roomId) {
+        this.roomId = roomId;
     }
 
     public LocalDate getCheckInDate() {

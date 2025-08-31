@@ -1,75 +1,86 @@
 package com.example.hotelbooking.service;
 
 import com.example.hotelbooking.model.Booking;
-import com.example.hotelbooking.model.Room;
-import com.example.hotelbooking.model.User;
-import com.example.hotelbooking.repository.BookingRepository;
-import com.example.hotelbooking.repository.RoomRepository;
-import com.example.hotelbooking.repository.UserRepository;
-import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
+import com.example.hotelbooking.dto.BookingRequest;
+import com.example.hotelbooking.dao.BookingDao;
 
-import javax.persistence.EntityNotFoundException;
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.temporal.ChronoUnit;
 import java.util.List;
 
-@Service
 public class BookingService {
-    
-    @Autowired
-    private BookingRepository bookingRepository;
-    
-    @Autowired
-    private UserRepository userRepository;
-    
-    @Autowired
-    private RoomRepository roomRepository;
+    private final BookingDao bookingDao;
+    private final CacheService cacheService;
 
-    @Transactional
+    public BookingService(BookingDao bookingDao, CacheService cacheService) {
+        this.bookingDao = bookingDao;
+        this.cacheService = cacheService;
+    }
+
+    public BookingService(BookingDao bookingDao) {
+        this(bookingDao, new CacheService());
+    }
+
     public Booking createBooking(BookingRequest request) {
-        User user = userRepository.findById(request.getUserId())
-                .orElseThrow(() -> new EntityNotFoundException("User not found"));
-        
-        Room room = roomRepository.findById(request.getRoomId())
-                .orElseThrow(() -> new EntityNotFoundException("Room not found"));
+        String availabilityKey = String.format("%d_%s_%s", 
+            request.getRoomId(), 
+            request.getCheckInDate(), 
+            request.getCheckOutDate());
 
-        // Check if room is available
-        List<Room> availableRooms = roomRepository.findAvailableRooms(
-                room.getHotel().getId(), request.getCheckInDate(), request.getCheckOutDate());
-        
-        if (!availableRooms.contains(room)) {
+        // Check cache for room availability
+        Boolean isAvailable = cacheService.getRoomAvailability(availabilityKey);
+        if (isAvailable != null && !isAvailable) {
+            throw new IllegalStateException("Room is not available for the selected dates");
+        }
+
+        // Double check with database if not in cache
+        if (!bookingDao.isRoomAvailable(request.getRoomId(), request.getCheckInDate(), request.getCheckOutDate())) {
+            cacheService.putRoomAvailability(availabilityKey, false);
             throw new IllegalStateException("Room is not available for the selected dates");
         }
 
         // Calculate total price
         long numberOfNights = ChronoUnit.DAYS.between(request.getCheckInDate(), request.getCheckOutDate());
-        BigDecimal totalPrice = room.getPricePerNight().multiply(BigDecimal.valueOf(numberOfNights));
+        BigDecimal totalPrice = BigDecimal.valueOf(100.00).multiply(BigDecimal.valueOf(numberOfNights));
 
         // Create booking
         Booking booking = new Booking();
-        booking.setUser(user);
-        booking.setRoom(room);
         booking.setCheckInDate(request.getCheckInDate());
         booking.setCheckOutDate(request.getCheckOutDate());
         booking.setTotalPrice(totalPrice);
         booking.setStatus(Booking.BookingStatus.CONFIRMED);
+        booking.setUser(bookingDao.findUserById(request.getUserId())
+                .orElseThrow(() -> new IllegalArgumentException("User not found")));
+        booking.setRoom(bookingDao.findRoomById(request.getRoomId())
+                .orElseThrow(() -> new IllegalArgumentException("Room not found")));
 
-        return bookingRepository.save(booking);
+        // Save and update caches
+        Booking savedBooking = bookingDao.save(booking);
+        cacheService.putBooking(savedBooking.getId(), savedBooking);
+        cacheService.invalidateRoomAvailability(availabilityKey);
+        cacheService.invalidateUserBookings(savedBooking.getUser().getId());
+        
+        return savedBooking;
     }
 
-    @Transactional
     public Booking updateBooking(Long bookingId, LocalDate newCheckInDate, LocalDate newCheckOutDate) {
-        Booking booking = bookingRepository.findById(bookingId)
-                .orElseThrow(() -> new EntityNotFoundException("Booking not found"));
+        Booking booking = getBooking(bookingId); // This uses cache
 
-        // Check if new dates are available
-        List<Room> availableRooms = roomRepository.findAvailableRooms(
-                booking.getRoom().getHotel().getId(), newCheckInDate, newCheckOutDate);
-        
-        if (!availableRooms.contains(booking.getRoom())) {
+        String availabilityKey = String.format("%d_%s_%s", 
+            booking.getRoom().getId(), 
+            newCheckInDate, 
+            newCheckOutDate);
+
+        // Check cache for room availability
+        Boolean isAvailable = cacheService.getRoomAvailability(availabilityKey);
+        if (isAvailable != null && !isAvailable) {
+            throw new IllegalStateException("Room is not available for the new dates");
+        }
+
+        // Double check with database if not in cache
+        if (!bookingDao.isRoomAvailable(booking.getRoom().getId(), newCheckInDate, newCheckOutDate)) {
+            cacheService.putRoomAvailability(availabilityKey, false);
             throw new IllegalStateException("Room is not available for the new dates");
         }
 
@@ -78,27 +89,59 @@ public class BookingService {
         booking.setCheckOutDate(newCheckOutDate);
         
         long numberOfNights = ChronoUnit.DAYS.between(newCheckInDate, newCheckOutDate);
-        BigDecimal totalPrice = booking.getRoom().getPricePerNight().multiply(BigDecimal.valueOf(numberOfNights));
+        BigDecimal totalPrice = BigDecimal.valueOf(100.00).multiply(BigDecimal.valueOf(numberOfNights));
         booking.setTotalPrice(totalPrice);
 
-        return bookingRepository.save(booking);
+        // Save and update caches
+        Booking updatedBooking = bookingDao.save(booking);
+        cacheService.putBooking(bookingId, updatedBooking);
+        cacheService.invalidateRoomAvailability(availabilityKey);
+        cacheService.invalidateUserBookings(updatedBooking.getUser().getId());
+        
+        return updatedBooking;
     }
 
-    @Transactional
     public void cancelBooking(Long bookingId) {
-        Booking booking = bookingRepository.findById(bookingId)
-                .orElseThrow(() -> new EntityNotFoundException("Booking not found"));
-        
+        Booking booking = getBooking(bookingId); // This uses cache
         booking.setStatus(Booking.BookingStatus.CANCELLED);
-        bookingRepository.save(booking);
+        
+        // Save and update caches
+        bookingDao.save(booking);
+        cacheService.invalidateBooking(bookingId);
+        cacheService.invalidateUserBookings(booking.getUser().getId());
+        
+        // Invalidate room availability cache for these dates
+        String availabilityKey = String.format("%d_%s_%s", 
+            booking.getRoom().getId(), 
+            booking.getCheckInDate(), 
+            booking.getCheckOutDate());
+        cacheService.invalidateRoomAvailability(availabilityKey);
     }
 
     public List<Booking> getUserBookings(Long userId) {
-        return bookingRepository.findByUserId(userId);
+        // Try to get from cache first
+        List<Booking> cachedBookings = cacheService.getUserBookings(userId);
+        if (cachedBookings != null) {
+            return cachedBookings;
+        }
+
+        // If not in cache, get from DB and cache it
+        List<Booking> bookings = bookingDao.findByUserId(userId);
+        cacheService.putUserBookings(userId, bookings);
+        return bookings;
     }
 
     public Booking getBooking(Long bookingId) {
-        return bookingRepository.findById(bookingId)
-                .orElseThrow(() -> new EntityNotFoundException("Booking not found"));
+        // Try to get from cache first
+        Booking cachedBooking = cacheService.getBooking(bookingId);
+        if (cachedBooking != null) {
+            return cachedBooking;
+        }
+
+        // If not in cache, get from DB and cache it
+        Booking booking = bookingDao.findById(bookingId)
+                .orElseThrow(() -> new IllegalArgumentException("Booking not found"));
+        cacheService.putBooking(bookingId, booking);
+        return booking;
     }
 }
