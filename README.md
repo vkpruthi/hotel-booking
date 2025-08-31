@@ -38,7 +38,7 @@ mvn clean install
 ## Running the Application
 
 ```bash
-java -jar target/hotel-booking-1.0.0.jar
+java -jar target/hotel-booking-1.0-SNAPSHOT-jar-with-dependencies.jar
 ```
 
 ## API Endpoints
