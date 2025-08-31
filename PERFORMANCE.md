@@ -32,12 +32,7 @@
    - 2-second timeout for permit acquisition
    - Graceful rejection with 429 status code
 
-2. **Stream Handling**
-   - Request body fully buffered before processing
-   - Prevents stream closed issues during concurrent access
-   - Efficient memory usage for request processing
-
-3. **Response Management**
+2. **Response Management**
    - Synchronized response writing
    - Proper header handling
    - Graceful handling of edge cases (empty responses, already sent headers)
