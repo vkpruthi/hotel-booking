@@ -162,7 +162,7 @@ The test suite includes:
 1. Clone the repository
 
 ```bash
-git clone [repository-url]
+git clone https://github.com/vkpruthi/hotel-booking.git
 cd hotel-booking
 ```
 
@@ -175,7 +175,7 @@ mvn clean install
 3. Run the application
 
 ```bash
-java -jar target/hotel-booking-1.0.0.jar
+java -jar target/hotel-booking-1.0-SNAPSHOT-jar-with-dependencies.jar
 ```
 
 4. Test the API
